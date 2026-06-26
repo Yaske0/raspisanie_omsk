@@ -1,0 +1,47 @@
+name: Сборка Windows .exe
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Собрать exe
+        run: >
+          pyinstaller --noconsole --onefile
+          --name "РасписаниеСмены"
+          --hidden-import win32timezone
+          --collect-submodules win32com
+          run.py
+
+      - name: Положить пример настроек рядом
+        run: copy config.json.example dist\config.json
+
+      - name: Выгрузить результат
+        uses: actions/upload-artifact@v4
+        with:
+          name: РасписаниеСмены-windows
+          path: |
+            app/dist/РасписаниеСмены.exe
+            app/dist/config.json
+          retention-days: 30
