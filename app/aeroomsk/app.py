@@ -5,8 +5,8 @@
 Тёмно-синяя «авиационная» тема, скруглённые кнопки, бегущий динозаврик
 во время работы и меняющаяся подпись под ним.
 
-Тяжёлая работа идёт в отдельном потоке; обновления интерфейса
-выполняются только в главном потоке (через очередь и after).
+Все размеры масштабируются под DPI Windows (100/125/150 %), поэтому при
+увеличенном масштабе текст не вылезает за кнопки, а окно растёт целиком.
 """
 
 from __future__ import annotations
@@ -36,10 +36,10 @@ LOG_FG = "#CFE2F5"
 DINO = "#6FCF6A"
 DINO_DARK = "#3E8E3A"
 CASE = "#C9842B"
-BTN_BG = "#0B2039"        # фон холстов-кнопок (близко к градиенту сверху)
+BTN_BG = "#0B2039"
 
 FONT_FAMILY = "Segoe UI"
-W, H = 820, 660
+W, H = 820, 660                       # логические размеры (при 100 %)
 
 LOADING_MESSAGES = [
     "Что-то ищем…",
@@ -50,7 +50,6 @@ LOADING_MESSAGES = [
 
 
 def _enable_dpi_awareness():
-    """Чёткое окно на современных экранах (без размытого масштабирования)."""
     if sys.platform != "win32":
         return
     try:
@@ -72,10 +71,9 @@ def _round_rect_points(x1, y1, x2, y2, r):
 
 
 class RoundedButton(tk.Canvas):
-    """Плоская скруглённая кнопка с эффектом наведения."""
+    """Плоская скруглённая кнопка. Размеры/шрифт приходят уже с учётом масштаба."""
 
-    def __init__(self, master, text, command, kind="primary",
-                 width=250, height=50):
+    def __init__(self, master, text, command, kind, width, height, radius, font):
         super().__init__(master, width=width, height=height,
                          bg=BTN_BG, highlightthickness=0, bd=0)
         self.command = command
@@ -89,13 +87,13 @@ class RoundedButton(tk.Canvas):
             self.c_norm, self.c_hover, self.c_press = PANEL, PANEL_LINE, "#0F2A4C"
             self.fg, self.outline = TEXT, ACCENT
 
-        pts = _round_rect_points(2, 2, width - 2, height - 2, 14)
+        inset = max(2, radius // 7)
+        pts = _round_rect_points(inset, inset, width - inset, height - inset, radius)
         self.shape = self.create_polygon(
             pts, smooth=True, fill=self.c_norm,
             outline=self.outline, width=1.5 if self.outline else 0)
-        self.label = self.create_text(
-            width / 2, height / 2, text=text, fill=self.fg,
-            font=(FONT_FAMILY, 12, "bold"))
+        self.label = self.create_text(width / 2, height / 2, text=text,
+                                      fill=self.fg, font=font)
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
@@ -107,8 +105,7 @@ class RoundedButton(tk.Canvas):
 
     def _on_enter(self, _):
         if self._enabled:
-            self._fill(self.c_hover)
-            self.configure(cursor="hand2")
+            self._fill(self.c_hover); self.configure(cursor="hand2")
 
     def _on_leave(self, _):
         if self._enabled:
@@ -127,15 +124,13 @@ class RoundedButton(tk.Canvas):
     def set_enabled(self, value: bool):
         self._enabled = value
         if value:
-            self._fill(self.c_norm)
-            self.itemconfig(self.label, fill=self.fg)
+            self._fill(self.c_norm); self.itemconfig(self.label, fill=self.fg)
         else:
             self._fill("#22405F" if self.kind == "primary" else PANEL)
             self.itemconfig(self.label, fill=TEXT_MUTED)
 
 
 class App(tk.Tk):
-    # геометрия динозавра на общем фоне
     DINO_CX = 410
     DINO_BASE = 372
 
@@ -143,8 +138,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("Расписание смены — Омск")
         self.configure(bg=BG_TOP)
-        self.geometry(f"{W}x{H}")
-        self.resizable(False, False)
+
+        self.s = self._detect_scale()          # коэффициент масштаба Windows
 
         self.cfg = cfg.load()
         self._q: queue.Queue[str] = queue.Queue()
@@ -157,6 +152,9 @@ class App(tk.Tk):
         self._frames = []
         self._gif_idx = 0
 
+        self.geometry(f"{self.px(W)}x{self.px(H)}")
+        self.resizable(False, False)
+
         gif = os.path.join(cfg.app_dir(), "loading.gif")
         if os.path.exists(gif):
             self._load_gif(gif)
@@ -166,63 +164,127 @@ class App(tk.Tk):
         self._dino_static()
         self.after(120, self._drain_log)
 
+    # --- масштаб -----------------------------------------------------------
+    def _detect_scale(self) -> float:
+        s = 1.0
+        try:
+            s = self.winfo_fpixels("1i") / 96.0
+        except Exception:
+            pass
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                self.update_idletasks()
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+                dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
+                if dpi:
+                    s = dpi / 96.0
+            except Exception:
+                pass
+        return min(max(s, 1.0), 3.0)
+
+    def px(self, v) -> int:
+        return int(round(v * self.s))
+
+    def _font(self, size, weight=None, slant=None):
+        spec = [FONT_FAMILY, -self.px(size)]   # отриц. размер = пиксели (без двойного масштаба)
+        if weight:
+            spec.append(weight)
+        if slant:
+            spec.append(slant)
+        return tuple(spec)
+
+    # --- масштабирующие обёртки рисования на фоне --------------------------
+    def _sc(self, coords):
+        return [self.px(c) for c in coords]
+
+    def _cline(self, *c, **kw):
+        if "width" in kw:
+            kw["width"] = max(1, self.px(kw["width"]))
+        return self.bg.create_line(*self._sc(c), **kw)
+
+    def _crect(self, *c, **kw):
+        if "width" in kw:
+            kw["width"] = max(1, self.px(kw["width"]))
+        return self.bg.create_rectangle(*self._sc(c), **kw)
+
+    def _coval(self, *c, **kw):
+        if "width" in kw:
+            kw["width"] = max(1, self.px(kw["width"]))
+        return self.bg.create_oval(*self._sc(c), **kw)
+
+    def _cpoly(self, *c, **kw):
+        if "width" in kw:
+            kw["width"] = max(1, self.px(kw["width"]))
+        return self.bg.create_polygon(*self._sc(c), **kw)
+
+    def _ctext(self, x, y, **kw):
+        if "width" in kw:
+            kw["width"] = self.px(kw["width"])
+        return self.bg.create_text(self.px(x), self.px(y), **kw)
+
     # --- интерфейс ---------------------------------------------------------
     def _build_ui(self):
-        self.bg = tk.Canvas(self, width=W, height=H, highlightthickness=0, bd=0)
+        self.bg = tk.Canvas(self, width=self.px(W), height=self.px(H),
+                            highlightthickness=0, bd=0)
         self.bg.place(x=0, y=0)
-        self._paint_gradient(self.bg, W, H, BG_TOP, BG_BOTTOM)
+        self._paint_gradient()
 
-        self.bg.create_text(40, 46, anchor="w", text="✈  Расписание смены",
-                           fill=TEXT, font=(FONT_FAMILY, 24, "bold"))
-        self.bg.create_text(44, 80, anchor="w", text="Омский аэропорт",
-                           fill=TEXT_MUTED, font=(FONT_FAMILY, 12))
-        self.bg.create_line(40, 104, 780, 104, fill=PANEL_LINE)
+        self._ctext(40, 46, anchor="w", text="✈  Расписание смены",
+                    fill=TEXT, font=self._font(26, "bold"))
+        self._ctext(44, 80, anchor="w", text="Омский аэропорт",
+                    fill=TEXT_MUTED, font=self._font(13))
+        self._cline(40, 104, 780, 104, fill=PANEL_LINE)
 
-        pts = _round_rect_points(40, 122, 780, 178, 16)
-        self.bg.create_polygon(pts, smooth=True, fill=PANEL, outline=PANEL_LINE)
-        self.shift_id = self.bg.create_text(
-            60, 150, anchor="w", text="…", fill=TEXT,
-            font=(FONT_FAMILY, 12, "bold"), width=700)
+        self._cpoly(*_round_rect_points(40, 122, 780, 178, 16),
+                    smooth=True, fill=PANEL, outline=PANEL_LINE)
+        self.shift_id = self._ctext(60, 150, anchor="w", text="…", fill=TEXT,
+                                    font=self._font(13, "bold"), width=700)
 
+        bf = self._font(13, "bold")
         self.btn_main = RoundedButton(self, "Создать и напечатать",
-                                      self.on_create_print, "primary", 270, 54)
-        self.btn_main.place(x=40, y=200)
+                                      self.on_create_print, "primary",
+                                      self.px(270), self.px(54), self.px(14), bf)
+        self.btn_main.place(x=self.px(40), y=self.px(200))
         self.btn_only = RoundedButton(self, "Только создать",
-                                      self.on_create_only, "secondary", 200, 54)
-        self.btn_only.place(x=326, y=200)
+                                      self.on_create_only, "secondary",
+                                      self.px(200), self.px(54), self.px(14), bf)
+        self.btn_only.place(x=self.px(326), y=self.px(200))
         self.btn_open = RoundedButton(self, "Открыть папку",
-                                      self.open_folder, "secondary", 190, 54)
-        self.btn_open.place(x=542, y=200)
+                                      self.open_folder, "secondary",
+                                      self.px(190), self.px(54), self.px(14), bf)
+        self.btn_open.place(x=self.px(542), y=self.px(200))
 
-        # подпись под динозавром — текст прямо на фоне (без «шва»)
-        self.caption_id = self.bg.create_text(
-            self.DINO_CX, 402, text="", fill=ACCENT,
-            font=(FONT_FAMILY, 12, "italic"))
+        self.caption_id = self._ctext(self.DINO_CX, 402, text="", fill=ACCENT,
+                                      font=self._font(13, slant="italic"))
 
-        self.bg.create_text(40, 422, anchor="w", text="Журнал",
-                           fill=TEXT_MUTED, font=(FONT_FAMILY, 11, "bold"))
-        self.log_box = tk.Text(self, height=11, wrap="word",
-                              bg=LOG_BG, fg=LOG_FG, insertbackground=LOG_FG,
-                              relief="flat", bd=0, padx=12, pady=10,
-                              font=("Consolas", 10))
-        self.log_box.place(x=40, y=444, width=740, height=190)
+        self._ctext(40, 422, anchor="w", text="Журнал",
+                    fill=TEXT_MUTED, font=self._font(12, "bold"))
+        self.log_box = tk.Text(self, wrap="word", bg=LOG_BG, fg=LOG_FG,
+                              insertbackground=LOG_FG, relief="flat", bd=0,
+                              padx=self.px(12), pady=self.px(10),
+                              font=("Consolas", -self.px(12)))
+        self.log_box.place(x=self.px(40), y=self.px(444),
+                           width=self.px(740), height=self.px(190))
         self.log_box.configure(state="disabled")
 
-    def _paint_gradient(self, cv, w, h, c1, c2):
-        r1, g1, b1 = self.winfo_rgb(c1)
-        r2, g2, b2 = self.winfo_rgb(c2)
+    def _paint_gradient(self):
+        h = self.px(H)
+        w = self.px(W)
+        r1, g1, b1 = self.winfo_rgb(BG_TOP)
+        r2, g2, b2 = self.winfo_rgb(BG_BOTTOM)
         for i in range(h):
             r = int(r1 + (r2 - r1) * i / h) >> 8
             g = int(g1 + (g2 - g1) * i / h) >> 8
             b = int(b1 + (b2 - b1) * i / h) >> 8
-            cv.create_line(0, i, w, i, fill=f"#{r:02x}{g:02x}{b:02x}")
+            self.bg.create_line(0, i, w, i, fill=f"#{r:02x}{g:02x}{b:02x}")
 
     def _refresh_shift_label(self):
         s = shifts.current_or_next_shift()
         self.bg.itemconfig(self.shift_id,
                            text="Будет напечатано для:  " + s.human())
 
-    # --- динозаврик (на общем фоне) ---------------------------------------
+    # --- динозаврик --------------------------------------------------------
     def _load_gif(self, path):
         try:
             i = 0
@@ -232,11 +294,15 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _gif_at(self):
+        self.bg.delete("dinogif")
+        self.bg.create_image(self.px(self.DINO_CX), self.px(self.DINO_BASE - 40),
+                            image=self._frames[self._gif_idx], tags="dinogif")
+
     def _dino_static(self):
         if self._frames:
-            self.bg.delete("dinogif")
-            self.bg.create_image(self.DINO_CX, self.DINO_BASE - 40,
-                                image=self._frames[0], tags="dinogif")
+            self._gif_idx = 0
+            self._gif_at()
             return
         self._dino_ground()
         self._dino_draw(0, 0)
@@ -246,8 +312,7 @@ class App(tk.Tk):
         y = self.DINO_BASE + 14
         x = self.DINO_CX - 150 - (self._ground_x % 40)
         while x < self.DINO_CX + 150:
-            self.bg.create_rectangle(x, y, x + 22, y + 3, fill="#27497A",
-                                    outline="", tags="ground")
+            self._crect(x, y, x + 22, y + 3, fill="#27497A", outline="", tags="ground")
             x += 40
 
     def _dino_draw(self, phase, bob):
@@ -256,35 +321,30 @@ class App(tk.Tk):
         base = self.DINO_BASE + bob
         top = base - 46
         t = "dino"
-        self.bg.create_polygon(cx - 26, top + 22, cx - 50, top + 30,
-                              cx - 26, top + 34, smooth=True,
-                              fill=DINO, outline=DINO_DARK, width=1, tags=t)
-        self.bg.create_oval(cx - 30, top + 8, cx + 26, top + 40,
-                           fill=DINO, outline=DINO_DARK, width=1, tags=t)
-        self.bg.create_rectangle(cx + 14, top - 12, cx + 26, top + 18,
-                                fill=DINO, outline=DINO_DARK, width=1, tags=t)
-        self.bg.create_oval(cx + 10, top - 26, cx + 42, top + 2,
-                           fill=DINO, outline=DINO_DARK, width=1, tags=t)
-        self.bg.create_rectangle(cx + 34, top - 18, cx + 50, top - 6,
-                                fill=DINO, outline=DINO_DARK, width=1, tags=t)
-        self.bg.create_oval(cx + 30, top - 20, cx + 38, top - 12,
-                           fill="#FFFFFF", outline="", tags=t)
-        self.bg.create_oval(cx + 33, top - 18, cx + 37, top - 14,
-                           fill="#0A1B33", outline="", tags=t)
-        self.bg.create_line(cx + 6, top + 20, cx + 16, top + 30,
-                           fill=DINO_DARK, width=3, tags=t)
-        self.bg.create_rectangle(cx + 8, top + 30, cx + 30, top + 44,
-                                fill=CASE, outline="#8A5A1E", width=1, tags=t)
-        self.bg.create_rectangle(cx + 16, top + 27, cx + 22, top + 31,
-                                fill="#8A5A1E", outline="", tags=t)
+        self._cpoly(cx - 26, top + 22, cx - 50, top + 30, cx - 26, top + 34,
+                    smooth=True, fill=DINO, outline=DINO_DARK, width=1, tags=t)
+        self._coval(cx - 30, top + 8, cx + 26, top + 40,
+                    fill=DINO, outline=DINO_DARK, width=1, tags=t)
+        self._crect(cx + 14, top - 12, cx + 26, top + 18,
+                    fill=DINO, outline=DINO_DARK, width=1, tags=t)
+        self._coval(cx + 10, top - 26, cx + 42, top + 2,
+                    fill=DINO, outline=DINO_DARK, width=1, tags=t)
+        self._crect(cx + 34, top - 18, cx + 50, top - 6,
+                    fill=DINO, outline=DINO_DARK, width=1, tags=t)
+        self._coval(cx + 30, top - 20, cx + 38, top - 12, fill="#FFFFFF", outline="", tags=t)
+        self._coval(cx + 33, top - 18, cx + 37, top - 14, fill="#0A1B33", outline="", tags=t)
+        self._cline(cx + 6, top + 20, cx + 16, top + 30, fill=DINO_DARK, width=3, tags=t)
+        self._crect(cx + 8, top + 30, cx + 30, top + 44,
+                    fill=CASE, outline="#8A5A1E", width=1, tags=t)
+        self._crect(cx + 16, top + 27, cx + 22, top + 31, fill="#8A5A1E", outline="", tags=t)
         if phase == 0:
             self._leg(cx - 12, base, -8); self._leg(cx + 10, base, 6)
         else:
             self._leg(cx - 12, base, 6); self._leg(cx + 10, base, -8)
 
     def _leg(self, x, base, dx):
-        self.bg.create_line(x, base - 8, x + dx, base, fill=DINO_DARK,
-                           width=4, tags="dino", capstyle="round")
+        self._cline(x, base - 8, x + dx, base, fill=DINO_DARK, width=4,
+                    tags="dino", capstyle="round")
 
     def _dino_start(self):
         if self._dino_after is None:
@@ -299,9 +359,7 @@ class App(tk.Tk):
     def _dino_tick(self):
         if self._frames:
             self._gif_idx = (self._gif_idx + 1) % len(self._frames)
-            self.bg.delete("dinogif")
-            self.bg.create_image(self.DINO_CX, self.DINO_BASE - 40,
-                                image=self._frames[self._gif_idx], tags="dinogif")
+            self._gif_at()
             self._dino_after = self.after(90, self._dino_tick)
             return
         self._phase ^= 1
