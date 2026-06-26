@@ -64,8 +64,9 @@ def fetch(direction: str, day: str, timeout: int = 20) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (schedule-bot)"}
     r = requests.get(BASE_URL, params=params, headers=headers, timeout=timeout)
     r.raise_for_status()
-    r.encoding = r.apparent_encoding or "utf-8"
-    return r.text
+    # Сайт отдаёт UTF-8. Авто-угадывание кодировки ломает кириллицу,
+    # поэтому декодируем явно как UTF-8.
+    return r.content.decode("utf-8", errors="replace")
 
 
 # --------------------------------------------------------------------------
@@ -105,21 +106,28 @@ def parse_board(html: str, direction: str, base_date: dt.date,
     year = year or base_date.year
     tables = pd.read_html(io.StringIO(html), keep_default_na=False)
 
-    # нужная таблица — та, где в любой ячейке встречается "по расписанию"
-    target = None
-    for t in tables:
-        flat = " ".join(str(x) for x in t.values.flatten())
-        if "по расписанию" in flat.lower():
-            target = t
-            break
-    if target is None:
-        return []
+    SCHED_KEY = "по расписанию"
 
-    rows = target.values.tolist()
-    # шапка — строка, содержащая "по расписанию"
-    header_idx = next(i for i, row in enumerate(rows)
-                      if any("по расписанию" in str(c).lower() for c in row))
-    header = rows[header_idx]
+    header = None
+    data_rows = None
+    for t in tables:
+        col_names = [str(c) for c in t.columns]
+        values = t.values.tolist()
+        # Вариант A: pandas увёл шапку в имена столбцов (таблица с <thead>)
+        if any(SCHED_KEY in c.lower() for c in col_names):
+            header = col_names
+            data_rows = values
+            break
+        # Вариант B: шапка осталась обычной строкой в данных
+        hidx = next((i for i, row in enumerate(values)
+                     if any(SCHED_KEY in str(c).lower() for c in row)), None)
+        if hidx is not None:
+            header = [str(c) for c in values[hidx]]
+            data_rows = values[hidx + 1:]
+            break
+
+    if header is None or data_rows is None:
+        return []
 
     ci_city = _find_col(header, "аэропорт")
     ci_flight = _find_col(header, "рейс")
@@ -149,7 +157,7 @@ def parse_board(html: str, direction: str, base_date: dt.date,
         v = str(row[idx]).strip()
         return v if v and v.lower() != "nan" else None
 
-    for row in rows[header_idx + 1:]:
+    for row in data_rows:
         first = str(row[0]).strip()
         m = _DATE_RE.match(first)
         if not m:                      # строки "О самолете…" и пустые — пропускаем
