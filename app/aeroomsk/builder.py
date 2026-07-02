@@ -56,13 +56,16 @@ def in_shift(f: Flight, shift: Shift) -> bool:
     # уже состоялся до начала смены — не наш
     if f.completed and f.actual is not None and f.actual < shift.start:
         return False
+    
     eff = f.effective
     if shift.start <= eff < shift.end:
         return True
-    # задержан без ETA, расписание было незадолго до начала смены
-    if (delayed_no_eta(f)
-            and shift.start - GRACE_BEFORE_START <= f.sched < shift.start):
+    
+    # задержан без ETA и не завершился — может прилететь в смену
+    # (неважно, когда было плановое время — даже из прошлой смены)
+    if delayed_no_eta(f) and not f.completed:
         return True
+    
     return False
 
 
