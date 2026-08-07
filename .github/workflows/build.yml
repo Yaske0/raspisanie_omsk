@@ -26,20 +26,18 @@ jobs:
 
       - name: Собрать exe
         run: >
-          pyinstaller --noconsole --onefile
+          pyinstaller --noconsole --noupx
           --name "РасписаниеСмены"
           --hidden-import win32timezone
           --collect-submodules win32com
           run.py
 
       - name: Положить пример настроек рядом
-        run: copy config.json.example dist\config.json
+        run: copy config.json.example "dist\РасписаниеСмены\config.json"
 
       - name: Выгрузить результат
         uses: actions/upload-artifact@v4
         with:
           name: РасписаниеСмены-windows
-          path: |
-            dist/РасписаниеСмены.exe
-            dist/config.json
+          path: dist/РасписаниеСмены
           retention-days: 30

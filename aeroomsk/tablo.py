@@ -16,13 +16,12 @@
 
 from __future__ import annotations
 
-import io
 import re
 import datetime as dt
 from dataclasses import dataclass
 from typing import Optional
 
-import pandas as pd
+from bs4 import BeautifulSoup
 import requests
 
 BASE_URL = "https://www.aeroomsk.ru/"
@@ -81,6 +80,7 @@ def detect_site_today(flights: list[Flight]) -> Optional[dt.date]:
 
 
 
+def fetch(direction: str, day: str, timeout: int = 20) -> str:
     params = {"type": direction, "day": day, "AjaxTablo": "ajax"}
     headers = {"User-Agent": "Mozilla/5.0 (schedule-bot)"}
     r = requests.get(BASE_URL, params=params, headers=headers, timeout=timeout)
@@ -121,31 +121,40 @@ def _mk_time(base: dt.date, raw, ref: Optional[dt.datetime]) -> Optional[dt.date
     return dt_
 
 
+def _table_rows(table) -> list[list[str]]:
+    """Строки таблицы как списки текста ячеек (td и th)."""
+    rows = []
+    for tr in table.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        rows.append([c.get_text(strip=True) for c in cells])
+    return rows
+
+
 def parse_board(html: str, direction: str, base_date: dt.date,
                 year: Optional[int] = None) -> list[Flight]:
     """Вернуть список рейсов с одного табло."""
     year = year or base_date.year
-    tables = pd.read_html(io.StringIO(html), keep_default_na=False)
+    # Встроенный в Python парсер (html.parser) — без внешних C-расширений
+    # (lxml/html5lib), чтобы разбор гарантированно работал и в собранном .exe.
+    soup = BeautifulSoup(html, "html.parser")
 
     SCHED_KEY = "по расписанию"
 
     header = None
     data_rows = None
-    for t in tables:
-        col_names = [str(c) for c in t.columns]
-        values = t.values.tolist()
-        # Вариант A: pandas увёл шапку в имена столбцов (таблица с <thead>)
-        if any(SCHED_KEY in c.lower() for c in col_names):
-            header = col_names
-            data_rows = values
-            break
-        # Вариант B: шапка осталась обычной строкой в данных
-        hidx = next((i for i, row in enumerate(values)
+    for table in soup.find_all("table"):
+        rows = _table_rows(table)
+        if not rows:
+            continue
+        # шапка — строка, где встречается "по расписанию"
+        # (может быть отдельной <thead>-строкой или обычной строкой данных)
+        hidx = next((i for i, row in enumerate(rows)
                      if any(SCHED_KEY in str(c).lower() for c in row)), None)
-        if hidx is not None:
-            header = [str(c) for c in values[hidx]]
-            data_rows = values[hidx + 1:]
-            break
+        if hidx is None:
+            continue
+        header = rows[hidx]
+        data_rows = rows[hidx + 1:]
+        break
 
     if header is None or data_rows is None:
         return []
